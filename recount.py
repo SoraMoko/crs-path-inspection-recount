@@ -14,6 +14,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PLS = (1, 2, 3, 4)
+# G31 plus one change each; see README.md
+VARIANTS = ("G31P", "G31_len4", "G31_cs_932237", "G31_cs_932237_932238", "G31_cs_31rules")
 
 
 def read(name):
@@ -55,14 +57,14 @@ def r3(x):
     return round(x, 3)
 
 
-# ---------------------------------------------------------------- Table 3, Table 7(a)
+# ---------------------------------------------------------------- Table 3, Section 3.1, Section 4.3.1
 def main_sample():
     rows = read("main_sample.csv")
     by_pl = defaultdict(list)
     for r in rows:
         by_pl[int(r["pl"])].append(r)
 
-    counts = {}
+    counts, old = {}, {}
     for pl in PLS:
         passed = [r for r in by_pl[pl] if r["G0"] == "200"]
         counts[str(pl)] = {
@@ -70,6 +72,11 @@ def main_sample():
             "G0_pass": len(passed),
             "G9_added": sum(r["G9"] == "403" for r in passed),
             "G31_added": sum(r["G31"] == "403" for r in passed),
+        }
+        old[str(pl)] = {
+            "blocked_by_4_29_0": sum(r["v4_29_0"] == "403" for r in by_pl[pl]),
+            "blocked_by_G0": sum(r["G0"] == "403" for r in by_pl[pl]),
+            "decision_differs": sum(r["v4_29_0"] != r["G0"] for r in by_pl[pl]),
         }
 
     passed = [r for r in by_pl[3] if r["G0"] == "200"]
@@ -93,15 +100,12 @@ def main_sample():
         only31 = [r for r in passed if r["G31"] == "403" and r["G9"] == "200"]
         onlyp = [r for r in passed if r["G31P"] == "403" and r["G9"] == "200"]
         pr[str(pl)] = {
-            "G31_added": sum(r["G31"] == "403" for r in passed),
-            "G31P_added": sum(r["G31P"] == "403" for r in passed),
             "G31_only": len(only31),
             "G31P_only": len(onlyp),
             "G31_only_932237_alone": sum(r["path_rules_G31"] == "932237" for r in only31),
             "G31P_only_932237_alone": sum(r["path_rules_G31P"] == "932237" for r in onlyp),
-            "newly_blocked_by_G31P": sum(r["G31P"] == "403" and r["G31"] == "200" for r in passed),
         }
-    return {"table3a": counts, "table3b": rates, "table7a": pr}
+    return {"table3a": counts, "table3b": rates, "main_4_29_0_vs_G0": old, "main_G31P": pr}
 
 
 # ---------------------------------------------------------------- Table 4
@@ -124,59 +128,63 @@ def removal_checks():
     return {"table4": out}
 
 
-# ---------------------------------------------------------------- Section 4.1.5, Table 7(b)
+# ---------------------------------------------------------------- Section 4.1.5
 def sites():
     rows = read("sites.csv")
     blocked = [r for r in rows if r["G31"] == "403"]
-    return {
-        "sites": {
-            "sites": len(rows),
-            "path_strings": len({r["path_string"] for r in rows}),
-            "blocked_path_strings": len({r["path_string"] for r in blocked}),
-            "G0_blocked": sum(r["G0"] == "403" for r in rows),
-            "G9_blocked": sum(r["G9"] == "403" for r in rows),
-            "pass_without_932237": sum(r["G31_minus_932237"] == "200" for r in blocked),
-            "pass_without_932238": sum(r["G31_minus_932238"] == "200" for r in blocked),
-            "pass_only_without_both": sum(r["G31_minus_932237"] == "403" and r["G31_minus_both"] == "200" for r in blocked),
-        },
-        "table7b": {
-            "G31": [len(blocked), len(rows) - len(blocked)],
-            "G31P": [sum(r["G31P"] == "403" for r in rows), sum(r["G31P"] == "200" for r in rows)],
-            "G31P_minus_932238": [sum(r["G31P_minus_932238"] == "403" for r in rows), sum(r["G31P_minus_932238"] == "200" for r in rows)],
-        },
-    }
+    return {"sites": {
+        "sites": len(rows),
+        "path_strings": len({r["path_string"] for r in rows}),
+        "blocked_path_strings": len({r["path_string"] for r in blocked}),
+        "blocked_by_G0_G9_4_29_0": [sum(r[g] == "403" for r in rows) for g in ("G0", "G9", "v4_29_0")],
+        "pass_without_932237": sum(r["G31_minus_932237"] == "200" for r in blocked),
+        "pass_without_932238": sum(r["G31_minus_932238"] == "200" for r in blocked),
+        "pass_only_without_both": sum(r["G31_minus_932237"] == "403" and r["G31_minus_both"] == "200" for r in blocked),
+        "blocked_by_G31P_minus_932238": sum(r["G31P_minus_932238"] == "403" for r in rows),
+    }}
 
 
-# ---------------------------------------------------------------- Table 5
-def regression_inputs():
-    rows = read("regression_inputs.csv")
-    out = {}
-    for group in ("selected", "random"):
-        obs, pred = {}, {}
-        for r in rows:
-            if r["group"] == group:
-                obs[r["id"], int(r["pl"]), r["config"]] = r["observed"]
-                pred[r["id"], int(r["pl"]), r["config"]] = r["predicted"]
-        ids = sorted({k[0] for k in obs})
-        t = {}
-        for pl in PLS:
-            t[str(pl)] = {
-                "G9_blocked": sum(obs[i, pl, "G9"] == "403" for i in ids),
-                "G31_blocked": sum(obs[i, pl, "G31"] == "403" for i in ids),
-                "G31_only": sum(obs[i, pl, "G9"] == "200" and obs[i, pl, "G31"] == "403" for i in ids),
-                "G31_only_predicted": sum(pred[i, pl, "G9"] == "200" and pred[i, pl, "G31"] == "403" for i in ids),
-                "prediction_agrees": sum(obs[i, pl, g] == pred[i, pl, g] for i in ids for g in ("G9", "G31")),
-            }
-        agree = sum(v["prediction_agrees"] for v in t.values())
-        wrong = [k for k in obs if obs[k] != pred[k]]
-        out[group] = {
-            "inputs": len(ids),
-            "by_pl": t,
-            "conditions": len(obs),
-            "prediction_agrees": agree,
-            "predicted_pass_observed_block": sum(pred[k] == "200" and obs[k] == "403" for k in wrong),
+# ---------------------------------------------------------------- Table 5, Sections 3.1, 3.2.3, 4.2.1, 4.3.2
+def full_group():
+    rows = read("full_group.csv")
+    cand = Counter(r["status"] for r in read("full_group_candidates.csv"))
+    by_pl = defaultdict(list)
+    for r in rows:
+        by_pl[int(r["pl"])].append(r)
+    t = {}
+    for pl in PLS:
+        s = by_pl[pl]
+        only = [r for r in s if r["G9"] == "200" and r["G31"] == "403"]
+        lo, hi = wilson(len(only), len(s))
+        t[str(pl)] = {
+            "inputs": len(s),
+            "G0_blocked": sum(r["G0"] == "403" for r in s),
+            "G9_blocked": sum(r["G9"] == "403" for r in s),
+            "G31_blocked": sum(r["G31"] == "403" for r in s),
+            "G31_only": len(only),
+            "G31_only_pct": round(100 * len(only) / len(s), 1),
+            "G31_only_wilson": [round(lo, 1), round(hi, 1)],
+            "not_nested": sum((r["G0"] == "403" and r["G9"] == "200") or (r["G9"] == "403" and r["G31"] == "200") for r in s),
+            "G31_only_by_path_score": sum(int(r["path_score_932_G31"]) >= 5 for r in only),
+            "G31_only_with_932237": sum("932237" in r["path_rules_G31"].split() for r in only),
+            "G31_only_932140_alone": sum(r["path_rules_G31"] == "932140" for r in only),
+            "decision_differs_4_29_0_vs_G0": sum(r["v4_29_0"] != r["G0"] for r in s),
+            "decision_differs_G31P_vs_G31": sum(r["G31P"] != r["G31"] for r in s),
+            "G31P_blocked": sum(r["G31P"] == "403" for r in s),
         }
-    return {"table5": out}
+    return {"table5": t, "full_group_candidates": {"positive_tests": sum(cand.values()), "used": cand["used"],
+                                                   "no_value": cand["no_value"], "too_long_or_empty": cand["too_long_or_empty"]}}
+
+
+# ---------------------------------------------------------------- Section 4.2.1 (selected group)
+def selected_group():
+    rows = read("regression_inputs.csv")
+    obs = {(r["id"], int(r["pl"]), r["config"]): r["observed"] for r in rows}
+    ids = sorted({k[0] for k in obs})
+    return {"selected_group": {
+        "inputs": len(ids),
+        "G31_only": [sum(obs[i, pl, "G9"] == "200" and obs[i, pl, "G31"] == "403" for i in ids) for pl in PLS],
+    }}
 
 
 # ---------------------------------------------------------------- Table 6
@@ -206,48 +214,51 @@ def detailed_inputs():
     return {"table6": out, "table6_responses": len(rows)}
 
 
-# ---------------------------------------------------------------- Section 3.2.3
-def random_group_candidates():
-    rows = read("random_group_candidates.csv")
-    c = Counter(r["status"] for r in rows)
+# ---------------------------------------------------------------- Table 7
+def comparison():
+    main = defaultdict(list)
+    for r in read("main_sample.csv"):
+        if r["G0"] == "200":
+            main[int(r["pl"])].append(r)
+    site = read("sites.csv")
+    full = defaultdict(list)
+    for r in read("full_group.csv"):
+        full[int(r["pl"])].append(r)
 
-    # A candidate is dropped when it is the same test as, or gives the same path as, a selected input.
-    selected = [r for r in read("regression_inputs.csv") if r["group"] == "selected"]
-    tests = {(r["source_rule"], r["test_id"]) for r in selected}
-    keys = {r["path_key"] for r in selected}
-
-    def status(r):
-        if not r["path_key"]:
-            return r["status"]
-        if (r["source_rule"], r["test_id"]) in tests:
-            return "same_test_as_selected"
-        return "same_path_as_selected" if r["path_key"] in keys else "pool"
-
-    pool = sorted((r for r in rows if r["status"] == "pool"), key=lambda r: (r["source_rule"], int(r["test_id"])))
-    drawn = random.Random(20261109).sample(pool, 24)
-    same_draw = [(r["source_rule"], r["test_id"]) for r in drawn] == \
-        [(r["source_rule"], r["test_id"]) for r in sorted((r for r in rows if r["drawn_as"]), key=lambda r: r["drawn_as"])]
-    return {"random_group_candidates": {
-        "positive_tests": len(rows),
-        "value_extracted": len(rows) - c["no_value"] - c["too_long_or_empty"],
-        "overlap_with_selected": c["same_test_as_selected"] + c["same_path_as_selected"],
-        "pool": len(pool),
-        "exclusion_reproduced": all(status(r) == r["status"] for r in rows),
-        "drawn": sum(bool(r["drawn_as"]) for r in rows),
-        "draw_reproduced": same_draw,
+    out = {}
+    for g in ("G31",) + VARIANTS + ("G9",):
+        out[g] = {
+            "main_added_PL3": sum(r[g] == "403" for r in main[3]),
+            "main_added_PL4": sum(r[g] == "403" for r in main[4]),
+            "sites_blocked": sum(r[g] == "403" for r in site),
+            "full_group_turned_to_pass": [sum(r["G31"] == "403" and r[g] == "200" for r in full[pl]) for pl in PLS],
+            "newly_blocked": sum(r[g] == "403" and r["G31"] == "200" for pl in (3, 4) for r in main[pl])
+                             + sum(r[g] == "403" and r["G31"] == "200" for pl in PLS for r in full[pl]),
+        }
+    out["G31"]["main_added_PL2"] = sum(r["G31"] == "403" for r in main[2])
+    out["G31_cs_31rules"]["main_added_PL2"] = sum(r["G31_cs_31rules"] == "403" for r in main[2])
+    lost = defaultdict(Counter)
+    for g in ("G31_cs_932237", "G31_len4"):
+        for r in full[3]:
+            if r["G31"] == "403" and r[g] == "200":
+                lost[g][r["source_rule"]] += 1
+    return {"table7": out, "table7_notes": {
+        "G31_blocked_PL3": sum(r["G31"] == "403" for r in full[3]),
+        "kept_with_cs_932237_932238": sum(r["G31"] == "403" and r["G31_cs_932237_932238"] == "403" for r in full[3]),
+        "turned_to_pass_by_source_rule": {g: dict(sorted(c.items())) for g, c in lost.items()},
     }}
 
 
 def main():
     result = {}
-    for part in (main_sample, removal_checks, sites, regression_inputs, detailed_inputs, random_group_candidates):
+    for part in (main_sample, removal_checks, sites, full_group, selected_group, detailed_inputs, comparison):
         result.update(part())
     print(json.dumps(result, indent=2))
 
     expected = json.loads((HERE / "expected.json").read_text(encoding="utf-8"))
-    diff = [k for k in expected if expected[k] != result.get(k)]
+    diff = [k for k in set(expected) | set(result) if expected.get(k) != result.get(k)]
     if diff:
-        print("MISMATCH with expected.json:", ", ".join(diff), file=sys.stderr)
+        print("MISMATCH with expected.json:", ", ".join(sorted(diff)), file=sys.stderr)
         return 1
     print("all values match expected.json", file=sys.stderr)
     return 0
